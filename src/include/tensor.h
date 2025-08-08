@@ -5,6 +5,7 @@
 #include "ops.h"
 #include "slice.h"
 
+#include <cassert>
 #include <cstddef>
 #include <stdexcept>
 #include <stdint.h>
@@ -74,6 +75,7 @@ public:
         if (from.size_ > size_) {
             throw std::runtime_error("Source storage larger than destination");
         }
+        // TODO: check device and allocator
         allocator_.copy(data_, from.data_, from.size_);
     }
 
@@ -98,6 +100,9 @@ public:
     bool is_pinned() const {
         return pin_memory_;
     }
+
+    TensorAllocator& allocator() { return allocator_; }
+    const TensorAllocator& allocator() const { return allocator_; }
 };
 
 class Tensor {
@@ -151,7 +156,7 @@ public:
 
     // NOTE: Implicit copy is SHALLOW
     //     with shared_ptr, the copy is shallow
-    //     should handled correctly by the compiler
+    //     should be handled correctly by the compiler
     Tensor(const Tensor& other) = default;
     Tensor& operator=(const Tensor& other) = default;
 
@@ -212,6 +217,20 @@ public:
     std::shared_ptr<TensorStorage> storage() const { return storage_; }
     
     size_t offset() const { return offset_; }
+
+    // shape/stride view transforms (return a new view on underlying storage)
+    // permute dimensions according to dims (e.g. {1,0,2}) without copy
+    Tensor permute(const std::vector<size_t>& dims) const;
+    // swap two dimensions without copy
+    Tensor transpose(size_t dim0, size_t dim1) const;
+    // 2D convenience transpose
+    Tensor T() const;
+    // reshape view
+    Tensor reshape(const std::vector<uint64_t>& new_shape) const;
+    Tensor reshape(std::initializer_list<uint64_t> new_shape) const { return reshape(std::vector<uint64_t>(new_shape)); }
+
+    // materialize a contiguous tensor with row-major strides
+    Tensor contiguous() const;
 
     // NOTE: 
     //     caller of data() and typed_data() 

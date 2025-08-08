@@ -1,6 +1,192 @@
 #include "tensor.h"
+#include "common.h"
 #include <iostream>
 
+
+static inline void validate_permutation(const std::vector<size_t>& dims, size_t ndim) {
+    if (dims.size() != ndim) {
+        throw std::runtime_error("permute: dims size must == tensor ndim");
+    }
+    std::vector<int> seen(ndim, 0);
+    for (size_t d : dims) {
+        if (d >= ndim) throw std::runtime_error("permute: dim out of range");
+        if (seen[d]) throw std::runtime_error("permute: duplicate dim");
+        seen[d] = 1;
+    }
+}
+
+Tensor Tensor::permute(const std::vector<size_t>& dims) const {
+    validate_permutation(dims, shape_.size());
+    std::vector<uint64_t> new_shape(shape_.size());
+    std::vector<uint64_t> new_strides(strides_.size());
+    for (size_t i = 0; i < dims.size(); ++i) {
+        new_shape[i] = shape_[dims[i]];
+        new_strides[i] = strides_[dims[i]];
+    }
+    return Tensor(new_shape, new_strides, dtype_, offset_, storage_);
+}
+
+Tensor Tensor::transpose(size_t dim0, size_t dim1) const {
+    const size_t n = shape_.size();
+    if (dim0 >= n || dim1 >= n) {
+        throw std::runtime_error("transpose: dim out of range");
+    }
+    if (dim0 == dim1) return *this;
+    std::vector<size_t> dims(n);
+    for (size_t i = 0; i < n; ++i) dims[i] = i;
+    std::swap(dims[dim0], dims[dim1]);
+    return permute(dims);
+}
+
+Tensor Tensor::T() const {
+    if (shape_.size() != 2) {
+        throw std::runtime_error("T(): only valid for 2D tensors");
+    }
+    return transpose(0, 1);
+}
+
+Tensor Tensor::reshape(const std::vector<uint64_t>& new_shape) const {
+    // Only zero-copy reshape if storage is contiguous with current view
+    if (!is_contiguous()) {
+        throw std::runtime_error("reshape: tensor is not contiguous");
+    }
+    if (new_shape.empty()) {
+        throw std::runtime_error("reshape: new_shape cannot be empty");
+    }
+    size_t new_elems = 1;
+    for (auto d : new_shape) new_elems *= d;
+    if (new_elems != n_elements()) {
+        throw std::runtime_error("reshape: number of elements must not change");
+    }
+    std::vector<uint64_t> new_strides(new_shape.size());
+    if (!new_shape.empty()) {
+        new_strides[new_shape.size() - 1] = 1;
+        for (int i = static_cast<int>(new_shape.size()) - 2; i >= 0; --i) {
+            new_strides[static_cast<size_t>(i)] = new_strides[static_cast<size_t>(i + 1)] * new_shape[static_cast<size_t>(i + 1)];
+        }
+    }
+    return Tensor(new_shape, new_strides, dtype_, offset_, storage_);
+}
+
+Tensor Tensor::contiguous() const {
+    // If already contiguous and offset is 0, we can return a shallow copy (same storage)
+    if (is_contiguous() && offset_ == 0) {
+        return Tensor(shape_, strides_, dtype_, offset_, storage_);
+    }
+
+    CHECK_THROW(storage_);
+    bool pinned = storage_->is_pinned();
+    TensorAllocator& src_allocator = storage_->allocator();
+
+    // build contiguous strides for the result
+    std::vector<uint64_t> contig_strides(shape_.size());
+    if (!shape_.empty()) {
+        contig_strides[shape_.size() - 1] = 1;
+        for (int i = static_cast<int>(shape_.size()) - 2; i >= 0; --i) {
+            contig_strides[static_cast<size_t>(i)] = contig_strides[static_cast<size_t>(i + 1)] * shape_[static_cast<size_t>(i + 1)];
+        }
+    }
+
+    // create fresh storage with same allocator/pin
+    const size_t elem_size = dtype_size(dtype_);
+    auto new_storage = std::make_shared<TensorStorage>(n_elements() * elem_size, pinned, src_allocator);
+    Tensor result(shape_, contig_strides, dtype_, /*offset=*/0, new_storage);
+
+    if (is_contiguous()) {
+        src_allocator.copy(result.data(), static_cast<const char*>(storage_->data()) + offset_, n_elements() * elem_size);
+        return result;
+    }
+
+    // general n-d strided copy
+    // We'll iterate over all elements using an index vector and compute flat index via strides
+    std::vector<uint64_t> idx(shape_.size(), 0);
+    auto* dst_bytes = static_cast<char*>(result.data());
+
+    switch (dtype_) {
+        case Dtype::Float32: {
+            auto* dst = reinterpret_cast<float*>(dst_bytes);
+            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
+                // compute source linear index from idx and strides_
+                size_t src_linear = 0;
+                for (size_t d = 0; d < shape_.size(); ++d) {
+                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
+                }
+                dst[linear] = *(reinterpret_cast<const float*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
+
+                // increment idx like an odometer
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
+                    idx[static_cast<size_t>(d)] = 0;
+                }
+            }
+            break;
+        }
+        case Dtype::Int32: {
+            auto* dst = reinterpret_cast<int32_t*>(dst_bytes);
+            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
+                size_t src_linear = 0;
+                for (size_t d = 0; d < shape_.size(); ++d) {
+                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
+                }
+                dst[linear] = *(reinterpret_cast<const int32_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
+                    idx[static_cast<size_t>(d)] = 0;
+                }
+            }
+            break;
+        }
+        case Dtype::Int16: {
+            auto* dst = reinterpret_cast<int16_t*>(dst_bytes);
+            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
+                size_t src_linear = 0;
+                for (size_t d = 0; d < shape_.size(); ++d) {
+                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
+                }
+                dst[linear] = *(reinterpret_cast<const int16_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
+                    idx[static_cast<size_t>(d)] = 0;
+                }
+            }
+            break;
+        }
+        case Dtype::Int8: {
+            auto* dst = reinterpret_cast<int8_t*>(dst_bytes);
+            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
+                size_t src_linear = 0;
+                for (size_t d = 0; d < shape_.size(); ++d) {
+                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
+                }
+                dst[linear] = *(reinterpret_cast<const int8_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
+                    idx[static_cast<size_t>(d)] = 0;
+                }
+            }
+            break;
+        }
+        case Dtype::Float16: {
+            auto* dst = reinterpret_cast<uint16_t*>(dst_bytes);
+            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
+                size_t src_linear = 0;
+                for (size_t d = 0; d < shape_.size(); ++d) {
+                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
+                }
+                dst[linear] = *(reinterpret_cast<const uint16_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
+                    idx[static_cast<size_t>(d)] = 0;
+                }
+            }
+            break;
+        }
+        default:
+            throw std::runtime_error("contiguous: unsupported dtype");
+    }
+
+    return result;
+}
 
 std::string Tensor::info(uint64_t max_elements) const {
     (void)max_elements;

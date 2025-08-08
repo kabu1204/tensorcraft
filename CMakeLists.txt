@@ -45,6 +45,8 @@ add_executable(test_tensor_storage examples/test_tensor_storage.cc)
 target_link_libraries(test_tensor_storage tensorcraft)
 add_executable(tensor_slice_example examples/tensor_slice_example.cc)
 target_link_libraries(tensor_slice_example tensorcraft)
+add_executable(tensor_view_ops_test examples/tensor_view_ops_test.cc)
+target_link_libraries(tensor_view_ops_test tensorcraft)
 
 # Installation rules
 install(TARGETS ${PROJECT_NAME} DESTINATION lib)
