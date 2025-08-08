@@ -97,92 +97,17 @@ Tensor Tensor::contiguous() const {
         return result;
     }
 
-    // general n-d strided copy
-    // We'll iterate over all elements using an index vector and compute flat index via strides
-    std::vector<uint64_t> idx(shape_.size(), 0);
-    auto* dst_bytes = static_cast<char*>(result.data());
-
-    switch (dtype_) {
-        case Dtype::Float32: {
-            auto* dst = reinterpret_cast<float*>(dst_bytes);
-            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
-                // compute source linear index from idx and strides_
-                size_t src_linear = 0;
-                for (size_t d = 0; d < shape_.size(); ++d) {
-                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
-                }
-                dst[linear] = *(reinterpret_cast<const float*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
-
-                // increment idx like an odometer
-                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
-                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
-                    idx[static_cast<size_t>(d)] = 0;
-                }
-            }
-            break;
+    // general n-d strided copy using unified iterator
+    {
+        const size_t esize = elem_size;
+        auto it = begin();
+        auto it_end = end();
+        char* dst = static_cast<char*>(result.data());
+        for (; it != it_end; ++it) {
+            const void* src_ptr = (*it).data();
+            src_allocator.copy(dst, src_ptr, esize);
+            dst += esize;
         }
-        case Dtype::Int32: {
-            auto* dst = reinterpret_cast<int32_t*>(dst_bytes);
-            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
-                size_t src_linear = 0;
-                for (size_t d = 0; d < shape_.size(); ++d) {
-                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
-                }
-                dst[linear] = *(reinterpret_cast<const int32_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
-                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
-                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
-                    idx[static_cast<size_t>(d)] = 0;
-                }
-            }
-            break;
-        }
-        case Dtype::Int16: {
-            auto* dst = reinterpret_cast<int16_t*>(dst_bytes);
-            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
-                size_t src_linear = 0;
-                for (size_t d = 0; d < shape_.size(); ++d) {
-                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
-                }
-                dst[linear] = *(reinterpret_cast<const int16_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
-                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
-                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
-                    idx[static_cast<size_t>(d)] = 0;
-                }
-            }
-            break;
-        }
-        case Dtype::Int8: {
-            auto* dst = reinterpret_cast<int8_t*>(dst_bytes);
-            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
-                size_t src_linear = 0;
-                for (size_t d = 0; d < shape_.size(); ++d) {
-                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
-                }
-                dst[linear] = *(reinterpret_cast<const int8_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
-                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
-                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
-                    idx[static_cast<size_t>(d)] = 0;
-                }
-            }
-            break;
-        }
-        case Dtype::Float16: {
-            auto* dst = reinterpret_cast<uint16_t*>(dst_bytes);
-            for (uint64_t linear = 0; linear < n_elements(); ++linear) {
-                size_t src_linear = 0;
-                for (size_t d = 0; d < shape_.size(); ++d) {
-                    src_linear += static_cast<size_t>(idx[d]) * static_cast<size_t>(strides_[d]);
-                }
-                dst[linear] = *(reinterpret_cast<const uint16_t*>(static_cast<const char*>(storage_->data()) + offset_) + src_linear);
-                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
-                    if (++idx[static_cast<size_t>(d)] < shape_[static_cast<size_t>(d)]) break;
-                    idx[static_cast<size_t>(d)] = 0;
-                }
-            }
-            break;
-        }
-        default:
-            throw std::runtime_error("contiguous: unsupported dtype");
     }
 
     return result;

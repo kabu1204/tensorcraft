@@ -20,6 +20,7 @@
 #include <initializer_list>
 #include <limits>
 #include <array>
+#include <iterator>
 
 
 // for ease of lifecycle management
@@ -372,4 +373,113 @@ private:
         }
         return flat_index;
     }
+
+public:
+    // Unified iterator
+    template<bool IsConst>
+    class ElementRef {
+    public:
+        using BytePtr = std::conditional_t<IsConst, const char*, char*>;
+        using RefFloat = std::conditional_t<IsConst, const float&, float&>;
+        using RefI8 = std::conditional_t<IsConst, const int8_t&, int8_t&>;
+        using RefI16 = std::conditional_t<IsConst, const int16_t&, int16_t&>;
+        using RefI32 = std::conditional_t<IsConst, const int32_t&, int32_t&>;
+        using RefI64 = std::conditional_t<IsConst, const int64_t&, int64_t&>;
+        using RefU16 = std::conditional_t<IsConst, const uint16_t&, uint16_t&>; // raw float16
+
+        ElementRef(BytePtr ptr, Dtype dt) : ptr_(ptr), dtype_(dt) {}
+
+        const void* data() const { return ptr_; }
+
+        template<typename T>
+        std::conditional_t<IsConst, const T&, T&> get() const {
+            if (!is_dtype_compatible<T>(dtype_)) {
+                throw std::runtime_error("ElementRef: type T incompatible with tensor dtype");
+            }
+            return *reinterpret_cast<std::conditional_t<IsConst, const T*, T*>>(const_cast<void*>(static_cast<const void*>(ptr_)));
+        }
+
+        RefFloat as_float32() const { return get<float>(); }
+        RefI8 as_int8() const { return get<int8_t>(); }
+        RefI16 as_int16() const { return get<int16_t>(); }
+        RefI32 as_int32() const { return get<int32_t>(); }
+        RefI64 as_int64() const { return get<int64_t>(); }
+        RefU16 as_float16_bits() const { return get<uint16_t>(); }
+
+    private:
+        template<typename T>
+        static bool is_dtype_compatible(Dtype td) {
+            if constexpr (std::is_same_v<T, float>) return td == Dtype::Float32;
+            if constexpr (std::is_same_v<T, int8_t>) return td == Dtype::Int8;
+            if constexpr (std::is_same_v<T, int16_t>) return td == Dtype::Int16;
+            if constexpr (std::is_same_v<T, int32_t>) return td == Dtype::Int32;
+            if constexpr (std::is_same_v<T, int64_t>) return td == Dtype::Int64;
+            if constexpr (std::is_same_v<T, uint16_t>) return td == Dtype::Float16; // raw bits
+            return false;
+        }
+
+        BytePtr ptr_;
+        Dtype dtype_;
+    };
+
+    template<bool IsConst>
+    class Iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = ElementRef<IsConst>;
+        using reference = ElementRef<IsConst>;
+
+        using TensorPtr = std::conditional_t<IsConst, const Tensor*, Tensor*>;
+        using BytePtr = std::conditional_t<IsConst, const char*, char*>;
+
+        Iterator(TensorPtr tensor, bool is_end)
+            : t_(tensor),
+              idx_(tensor ? tensor->ndim() : 0, 0),
+              linear_(is_end && tensor ? tensor->n_elements() : 0),
+              elem_size_(tensor ? tensor->element_size() : 0),
+              base_(tensor ? static_cast<BytePtr>(tensor->data()) : nullptr),
+              dtype_(tensor ? tensor->dtype() : Dtype::Float32),
+              shape_ptr_(tensor ? &tensor->shape() : nullptr),
+              strides_ptr_(tensor ? &tensor->strides() : nullptr) {}
+
+        reference operator*() const {
+            size_t src_linear = 0;
+            for (size_t d = 0; d < shape_ptr_->size(); ++d) {
+                src_linear += static_cast<size_t>(idx_[d]) * static_cast<size_t>((*strides_ptr_)[d]);
+            }
+            return reference(base_ + src_linear * elem_size_, dtype_);
+        }
+
+        Iterator& operator++() {
+            if (linear_ < (t_ ? t_->n_elements() : 0)) {
+                ++linear_;
+                for (int d = static_cast<int>(shape_ptr_->size()) - 1; d >= 0; --d) {
+                    if (++idx_[static_cast<size_t>(d)] < (*shape_ptr_)[static_cast<size_t>(d)]) {
+                        break;
+                    }
+                    idx_[static_cast<size_t>(d)] = 0;
+                }
+            }
+            return *this;
+        }
+
+        bool operator==(const Iterator& other) const { return t_ == other.t_ && linear_ == other.linear_; }
+        bool operator!=(const Iterator& other) const { return !(*this == other); }
+
+    private:
+        TensorPtr t_;
+        std::vector<uint64_t> idx_;
+        uint64_t linear_;
+        size_t elem_size_;
+        BytePtr base_;
+        Dtype dtype_;
+        const std::vector<uint64_t>* shape_ptr_;
+        const std::vector<uint64_t>* strides_ptr_;
+    };
+
+    Iterator<false> begin() { return Iterator<false>(this, false); }
+    Iterator<false> end() { return Iterator<false>(this, true); }
+    Iterator<true> begin() const { return Iterator<true>(this, false); }
+    Iterator<true> end() const { return Iterator<true>(this, true); }
 };

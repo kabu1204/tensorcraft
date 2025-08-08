@@ -14,6 +14,8 @@ endif()
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -Wpedantic -Werror")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -Wall -Wextra")
 
+add_compile_options(-Wno-unused-variable -Wno-unused-parameter)
+
 include_directories(src/include)
 
 set(SOURCES

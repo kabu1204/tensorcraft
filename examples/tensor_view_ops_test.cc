@@ -79,6 +79,24 @@ static void test_contiguous_enables_reshape() {
     CHECK_THROW(nc.at<float>(2,1) == c.at<float>(2,1));
 }
 
+static void test_unified_iterator_write() {
+    // creation
+    auto t = Tensor::zeros({2,3}, Dtype::Float32);
+    float val = 1.5f;
+    for (auto it = t.begin(); it != t.end(); ++it) {
+        (*it).as_float32() = val;
+        val += 1.0f;
+    }
+    // verify
+    float expect = 1.5f;
+    for (uint64_t i = 0; i < t.shape()[0]; ++i) {
+        for (uint64_t j = 0; j < t.shape()[1]; ++j) {
+            CHECK_THROW(std::fabs(t.at<float>(i,j) - expect) < 1e-6f);
+            expect += 1.0f;
+        }
+    }
+}
+
 int main() {
     try {
         test_transpose_2d();
@@ -86,6 +104,7 @@ int main() {
         test_reshape_contiguous();
         test_reshape_noncontiguous_throws();
         test_contiguous_enables_reshape();
+        test_unified_iterator_write();
         std::printf("All tensor view ops tests passed.\n");
         return 0;
     } catch (const std::exception& e) {
