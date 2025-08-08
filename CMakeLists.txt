@@ -20,6 +20,7 @@ set(SOURCES
     src/memory.cc
     src/tensor.cc
     src/ops.cc
+    src/slice.cc
 )
 
 set(HEADERS
@@ -28,6 +29,7 @@ set(HEADERS
     src/include/common.h
     src/include/arch.h
     src/include/ops.h
+    src/include/slice.h
 )
 
 add_library(tensorcraft STATIC ${SOURCES})
@@ -41,8 +43,8 @@ add_executable(tensor_init examples/tensor_init.cpp)
 target_link_libraries(tensor_init tensorcraft)
 add_executable(test_tensor_storage examples/test_tensor_storage.cc)
 target_link_libraries(test_tensor_storage tensorcraft)
-add_executable(tensor_indexing_example examples/tensor_indexing_example.cc)
-target_link_libraries(tensor_indexing_example tensorcraft)
+add_executable(tensor_slice_example examples/tensor_slice_example.cc)
+target_link_libraries(tensor_slice_example tensorcraft)
 
 # Installation rules
 install(TARGETS ${PROJECT_NAME} DESTINATION lib)

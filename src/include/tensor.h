@@ -3,6 +3,7 @@
 #include "memory.h"
 #include "common.h"
 #include "ops.h"
+#include "slice.h"
 
 #include <cstddef>
 #include <stdexcept>
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <initializer_list>
 #include <limits>
+#include <array>
+
 
 // for ease of lifecycle management
 class TensorStorage {
@@ -281,119 +284,42 @@ public:
         return Tensor(shape, strides, dtype_, offset, storage_);
     }
 
-    // Print tensor information and contents
-    void print(const std::string& name = "Tensor", uint64_t max_elements = 10) const {
-        CHECK_THROW(data());
-        
-        std::printf("%s [", name.c_str());
-        for (size_t i = 0; i < shape_.size(); ++i) {
-            std::printf("%llu", shape_[i]);
-            if (i < shape_.size() - 1) std::printf("x");
-        }
-        std::printf(", %s]\n", dtype_name(dtype_));
-        
-        if (!is_contiguous()) {
-            std::printf("  Non-contiguous tensor, strides: [");
-            for (size_t i = 0; i < strides_.size(); ++i) {
-                std::printf("%llu", strides_[i]);
-                if (i < strides_.size() - 1) std::printf(", ");
-            }
-            std::printf("]\n");
-        }
-        
-        uint64_t total_elements = n_elements();
-        uint64_t elements_to_show = std::min(max_elements, total_elements);
-        
-        if (total_elements == 0) {
-            std::printf("  Empty tensor\n");
-            return;
-        }
-        
-        std::printf("  Elements: ");
-        print_elements(elements_to_show);
-        
-        if (total_elements > max_elements) {
-            std::printf(" ... (+%llu more)", total_elements - max_elements);
-        }
-        std::printf("\n");
+    template<typename T, typename... Indices>
+    T& at(Indices... indices) {
+        auto* base_ptr = typed_data<T>();
+        const size_t flat_index = compute_flat_index_from_indices(indices...);
+        return base_ptr[flat_index];
     }
 
-private:
-    void print_elements(uint64_t count) const {
-        switch (dtype_) {
-            case Dtype::Float32: {
-                auto* typed_data = static_cast<const float*>(data());
-                for (uint64_t i = 0; i < count; ++i) {
-                    std::printf("%.6f", typed_data[i]);
-                    if (i < count - 1) std::printf(", ");
-                }
-                break;
-            }
-            case Dtype::Float16: {
-                // TODO: support float16
-                auto* typed_data = static_cast<const uint16_t*>(data());
-                for (uint64_t i = 0; i < count; ++i) {
-                    std::printf("%.6hu", typed_data[i]);
-                    if (i < count - 1) std::printf(", ");
-                }
-                break;
-            }
-            case Dtype::Int8: {
-                auto* typed_data = static_cast<const int8_t*>(data());
-                for (uint64_t i = 0; i < count; ++i) {
-                    std::printf("%d", static_cast<int>(typed_data[i]));
-                    if (i < count - 1) std::printf(", ");
-                }
-                break;
-            }
-            case Dtype::Int16: {
-                auto* typed_data = static_cast<const int16_t*>(data());
-                for (uint64_t i = 0; i < count; ++i) {
-                    std::printf("%d", static_cast<int>(typed_data[i]));
-                    if (i < count - 1) std::printf(", ");
-                }
-                break;
-            }
-            case Dtype::Int32: {
-                auto* typed_data = static_cast<const int32_t*>(data());
-                for (uint64_t i = 0; i < count; ++i) {
-                    std::printf("%d", typed_data[i]);
-                    if (i < count - 1) std::printf(", ");
-                }
-                break;
-            }
-            default:
-                std::printf("[Unsupported dtype for printing]");
-        }
+    template<typename T, typename... Indices>
+    const T& at(Indices... indices) const {
+        auto* base_ptr = typed_data<T>();
+        const size_t flat_index = compute_flat_index_from_indices(indices...);
+        return base_ptr[flat_index];
     }
 
-public:
-    
-    // Print detailed tensor structure
-    void print_detailed(const std::string& name = "Tensor") const {
-        CHECK_THROW(data());
-        
-        std::printf("=== %s ===\n", name.c_str());
-        std::printf("Shape: [");
-        for (size_t i = 0; i < shape_.size(); ++i) {
-            std::printf("%llu", shape_[i]);
-            if (i < shape_.size() - 1) std::printf(", ");
-        }
-        std::printf("]\n");
-        std::printf("Data type: %s\n", dtype_name(dtype_));
-        std::printf("Element size: %zu bytes\n", dtype_size(dtype_));
-        std::printf("Strides: [");
-        for (size_t i = 0; i < strides_.size(); ++i) {
-            std::printf("%llu", strides_[i]);
-            if (i < strides_.size() - 1) std::printf(", ");
-        }
-        std::printf("]\n");
-        std::printf("Contiguous: %s\n", is_contiguous() ? "Yes" : "No");
-        std::printf("Total elements: %llu\n", n_elements());
-        std::printf("Total size: %zu bytes\n", nbytes());
-        std::printf("Memory: %p\n", data());
-        std::printf("===================\n");
-    }
+    // indexing and slicing views
+    Tensor select(size_t dim, int64_t index) const;
+    Tensor narrow(size_t dim, int64_t start, int64_t length) const;
+    Tensor slice(size_t dim, int64_t start, int64_t end, int64_t step = 1) const;
+    Tensor slice(const std::vector<Slice>& slices) const;
+
+    // operator[] interface indexing and slicing
+    Tensor operator[](int64_t index) const;
+    Tensor operator[](Slice s) const;
+
+    // brace-init multi-dimensional slicing
+    Tensor operator[](std::initializer_list<Index> indices) const;
+    Tensor operator[](std::initializer_list<IndexArg> indices) const;
+    Tensor index(const std::vector<Index>& indices, bool keep_dim = false) const;
+    Tensor operator()(const std::vector<Index>& indices) const { return index(indices); }
+
+    // numpy-style format
+    std::string format_array_recursive(size_t dim, int indent, std::vector<uint64_t>& idx) const;
+    std::string format_shape() const;
+    std::string format_strides() const;
+    std::string info(uint64_t max_elements = 32) const;
+    std::string info_full() const;
 
 private:
     // Private constructor for creating views (shares storage)
@@ -406,13 +332,25 @@ private:
     ) : shape_{shape}, strides_{strides}, dtype_{dtype}, offset_{offset}, storage_{storage} {
         n_elements_ = compute_total_elements(shape_);
     }
+
+    template<typename... Indices>
+    size_t compute_flat_index_from_indices(Indices... indices) const {
+        static_assert((std::is_integral_v<Indices> && ...), "Indices must be integral types");
+        constexpr size_t kNumIdx = sizeof...(Indices);
+        if (kNumIdx != shape_.size()) {
+            throw std::runtime_error{"Number of indices must match tensor dimensions"};
+        }
+        std::array<int64_t, kNumIdx> idx_array{static_cast<int64_t>(indices)...};
+        size_t flat_index = 0;
+        for (size_t dim = 0; dim < kNumIdx; ++dim) {
+            int64_t dim_size = static_cast<int64_t>(shape_[dim]);
+            int64_t idx = idx_array[dim];
+            if (idx < 0) idx += dim_size;  // negative index support
+            if (idx < 0 || idx >= dim_size) {
+                throw std::runtime_error{"Index out of bounds"};
+            }
+            flat_index += static_cast<size_t>(idx) * static_cast<size_t>(strides_[dim]);
+        }
+        return flat_index;
+    }
 };
-
-// Implementation of standalone tensor printing functions
-inline void print_tensor(const Tensor& tensor, const std::string& name, uint32_t max_elements) {
-    tensor.print(name, max_elements);
-}
-
-inline void print_tensor_detailed(const Tensor& tensor, const std::string& name) {
-    tensor.print_detailed(name);
-}

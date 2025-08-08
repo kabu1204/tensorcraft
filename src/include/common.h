@@ -12,6 +12,7 @@
 #include <type_traits>
 #include <string>
 #include <stdexcept>
+#include <limits>
 
 // Assertion macro that throws an exception
 #define CHECK_THROW(condition) \

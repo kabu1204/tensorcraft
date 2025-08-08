@@ -3,3 +3,5 @@
 #include <cassert>
 
 // TODO
+
+int main() {}
